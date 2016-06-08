@@ -1,0 +1,24 @@
+{
+  "name": "versionbits",
+  "version": "0.0.0",
+  "description": "Track Bitcoin versionbits deployments (BIP9)",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "webcoin",
+    "bitcoin",
+    "version",
+    "versionbits",
+    "deployments",
+    "bip9"
+  ],
+  "author": "Matt Bell <mappum@gmail.com>",
+  "license": "MIT",
+  "dependencies": {
+    "object-assign": "^4.1.0",
+    "old": "^0.1.3",
+    "to2": "^1.0.0"
+  }
+}
