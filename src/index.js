@@ -6,6 +6,8 @@ const to = require('to2').obj
 const assign = require('object-assign')
 
 const TIME_WINDOW = 11
+const REORG_WINDOW = 100
+const YEAR = 31536000
 
 class VersionBits extends EventEmitter {
   constructor (params) {
@@ -23,6 +25,11 @@ class VersionBits extends EventEmitter {
         status: 'defined'
       }, deployment)
     })
+    this.deploymentsIndex = {}
+    for (let dep of this.deployments) {
+      this.deploymentsIndex[dep.name] = dep
+    }
+    this.log = this.deployments.slice(0)
     // TODO: fetch statuses from db
   }
 
@@ -37,9 +44,6 @@ class VersionBits extends EventEmitter {
       }
       this.last = block
 
-      if (block.height % 20000 === 0) {
-        console.log('height:', block.height, 'version:', '0x'+block.header.version.toString(16))
-      }
       if (block.add) {
         this._addBlock(block)
       } else {
@@ -83,12 +87,11 @@ class VersionBits extends EventEmitter {
       for (let dep of this.deployments) {
         if (dep.status !== 'lockedIn') continue
         if (block.height - dep.lockInHeight >= this.params.confirmationWindow) {
-          dep.status = 'activated'
-          dep.activationHeight = block.height
-          dep.activationTime = timestamp
-          this.emit('activation', assign({}, dep))
-          this.emit('change', assign({}, dep))
-          // TODO: store status in db
+          this._updateDeployment(dep.name, {
+            status: 'activated',
+            activationHeight: block.height,
+            activationTime: timestamp
+          }, windowEntry)
         }
       }
     }
@@ -97,14 +100,12 @@ class VersionBits extends EventEmitter {
     for (let dep of this.deployments) {
       if (dep.status === 'defined' || dep.status === 'started') {
         if (mtp >= dep.timeout) {
-          dep.status = 'failed'
-          this.emit('fail', assign({}, dep))
-          this.emit('change', assign({}, dep))
+          this._updateDeployment(dep.name, { status: 'failed' }, windowEntry)
         } else if (dep.status === 'defined' && mtp >= dep.start) {
-          dep.status = 'started'
-          dep.startHeight = block.height
-          this.emit('start', assign({}, dep))
-          this.emit('change', assign({}, dep))
+          this._updateDeployment(dep.name, {
+            status: 'started',
+            startHeight: block.height
+          }, windowEntry)
         }
       }
     }
@@ -114,7 +115,6 @@ class VersionBits extends EventEmitter {
       if (isBip9Version(expiredEntry.version)) {
         this.bip9Count -= 1
         for (let dep of expiredEntry.deployments) {
-          if (dep.status !== 'started') continue
           dep.count--
         }
       }
@@ -126,20 +126,52 @@ class VersionBits extends EventEmitter {
       for (let bit of bits) {
         let dep = this._getStartedDeployment(bit)
         if (!dep) {
-          return this.emit('error', new Error('Saw versionbit for an ' +
-            `unknown deployment (height=${block.height}, ` +
-            `version=0x${version.toString(16)}, bit=${bit})`))
+          dep = {
+            count: 0,
+            bit,
+            status: 'started',
+            name: `unknown-${bit}-${block.height}`,
+            unknown: true,
+            start: timestamp,
+            startHeight: block.height,
+            timeout: timestamp + YEAR // just a guess, we don't know the actual timeout
+          }
+          this.deployments.push(dep)
+          this.deploymentsIndex[dep.name] = dep
+          // TODO: store deployment in db
+          this.emit('unknown', assign({}, dep))
+          this.emit('started', assign({}, dep))
+          this.emit('update', assign({}, dep))
         }
-        dep.count++
+        var diff = { count: dep.count + 1 }
         if (dep.count === this.params.activationThreshold) {
-          dep.status = 'lockedIn'
-          dep.lockInHeight = block.height
-          dep.lockInTime = timestamp
-          this.emit('lockIn', assign({}, dep))
-          this.emit('change', assign({}, dep))
-          // TODO: store status change in db
+          diff = assign(diff, {
+            status: 'lockedIn',
+            lockInHeight: block.height,
+            lockInTime: timestamp
+          })
         }
+        this._updateDeployment(dep.name, diff, windowEntry)
       }
+    }
+  }
+
+  getDeployment (id) {
+    return assign({}, this.deploymentsIndex[id] || {})
+  }
+
+  _updateDeployment (id, values, entry) {
+    var dep = this.deploymentsIndex[id]
+    var oldDep = assign({}, dep)
+    if (!entry.deployments.includes(dep)) {
+      entry.deployments.push(dep)
+    }
+    assign(dep, values)
+    if (oldDep.status !== dep.status) {
+      var dep2 = assign({}, dep)
+      this.emit('update', dep2)
+      if (dep.unknown) this.emit('unknown', dep2)
+      this.emit(dep.status, dep2)
     }
   }
 
