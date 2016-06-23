@@ -5,7 +5,8 @@ const old = require('old')
 const assign = require('object-assign')
 
 const TIME_WINDOW = 11
-const REORG_WINDOW = 100
+// const REORG_WINDOW = 100
+
 const YEAR = 31536000
 
 class VersionBits extends EventEmitter {
@@ -14,6 +15,7 @@ class VersionBits extends EventEmitter {
     if (!params) {
       throw new Error('Must specify versionbits params')
     }
+    assertValidParams(params)
     this.params = params
     this.window = []
     this.bip9Count = 0
@@ -163,4 +165,12 @@ function getBits (version) {
     if (version & (1 << i)) bits.push(i)
   }
   return bits
+}
+
+function assertValidParams (params) {
+  if (!params.confirmationWindow ||
+  !params.activationThreshold ||
+  !params.deployments) {
+    throw new Error('Invalid versionbits params')
+  }
 }
