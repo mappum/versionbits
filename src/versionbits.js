@@ -2,7 +2,6 @@
 
 const EventEmitter = require('events')
 const old = require('old')
-const to = require('to2').obj
 const assign = require('object-assign')
 
 const TIME_WINDOW = 11
@@ -16,7 +15,6 @@ class VersionBits extends EventEmitter {
       throw new Error('Must specify versionbits params')
     }
     this.params = params
-    this.last = null
     this.window = []
     this.bip9Count = 0
     this.deployments = params.deployments.map((deployment) => {
@@ -33,48 +31,8 @@ class VersionBits extends EventEmitter {
     // TODO: fetch statuses from db
   }
 
-  createWriteStream () {
-    return to((block, enc, cb) => {
-      if (this.last) {
-        try {
-          this._checkBlockOrder(block)
-        } catch (err) {
-          return cb(err)
-        }
-      }
-      this.last = block
-
-      if (block.add) {
-        this._addBlock(block)
-      } else {
-        this._removeBlock()
-      }
-
-      cb()
-    })
-  }
-
-  getDeployment (name) {
-    for (let dep of this.deployments) {
-      if (dep.name === name) return assign({}, dep)
-    }
-  }
-
-  _checkBlockOrder (block) {
-    var actualHeight = block.height
-    var expectedHeight = this.last.height + (block.add ? 1 : 0)
-    if (actualHeight !== expectedHeight) {
-      throw new Error('Got block with incorrect height. Expected ' +
-        `${expectedHeight}, but got ${actualHeight}`)
-    }
-
-    var actualHash = block.add ? block.header.prevHash : block.header.getHash()
-    var expectedHash = this.last.header.getHash()
-    if (!actualHash.equals(expectedHash)) {
-      throw new Error('Got block with incorrecty hash. Expected ' +
-        `"${expectedHash.toString('hex')}" but got ` +
-        `"${actualHash.toString('hex')}"`)
-    }
+  get (id) {
+    return assign({}, this.deploymentsIndex[id] || {})
   }
 
   _addBlock (block) {
@@ -154,10 +112,6 @@ class VersionBits extends EventEmitter {
         this._updateDeployment(dep.name, diff, windowEntry)
       }
     }
-  }
-
-  getDeployment (id) {
-    return assign({}, this.deploymentsIndex[id] || {})
   }
 
   _updateDeployment (id, values, entry) {
