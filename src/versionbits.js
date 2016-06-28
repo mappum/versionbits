@@ -1,24 +1,27 @@
 'use strict'
 
-const EventEmitter = require('events')
+const { PassThrough } = require('stream')
 const old = require('old')
 const assign = require('object-assign')
+const BlockchainState = require('blockchain-state')
 
 const TIME_WINDOW = 11
-// const REORG_WINDOW = 100
+const REORG_WINDOW = 100
 
 const YEAR = 31536000
 
-class VersionBits extends EventEmitter {
-  constructor (params) {
-    super()
+class VersionBits extends PassThrough {
+  constructor (params, db) {
+    super({ objectMode: true })
     if (!params) {
       throw new Error('Must specify versionbits params')
     }
+    if (!db) {
+      throw new Error('Must specify LevelUp instance')
+    }
     assertValidParams(params)
     this.params = params
-    this.window = []
-    this.bip9Count = 0
+
     this.deployments = params.deployments.map((deployment) => {
       return assign({
         count: 0,
@@ -29,110 +32,207 @@ class VersionBits extends EventEmitter {
     for (let dep of this.deployments) {
       this.deploymentsIndex[dep.name] = dep
     }
-    this.log = this.deployments.slice(0)
-    // TODO: fetch statuses from db
+
+    this.window = []
+    this.bip9Count = 0
+    this.ready = false
+
+    this.state = BlockchainState(
+      this._addBlock.bind(this),
+      this._removeBlock.bind(this),
+      db)
+    this.pipe(this.state)
+
+    this._init()
   }
 
   get (id) {
     return assign({}, this.deploymentsIndex[id] || {})
   }
 
-  _addBlock (block) {
-    var { version, timestamp } = block.header
-    var windowEntry = { version, timestamp, deployments: [] }
-    this.window.push(windowEntry)
-    if (this.window.length < TIME_WINDOW) return
+  getHash (cb) {
+    return this.state.getHash(cb)
+  }
 
-    if (block.height % this.params.confirmationWindow === 0) {
-      for (let dep of this.deployments) {
-        if (dep.status !== 'lockedIn') continue
-        if (block.height - dep.lockInHeight >= this.params.confirmationWindow) {
-          this._updateDeployment(dep.name, {
-            status: 'activated',
-            activationHeight: block.height,
-            activationTime: timestamp
-          }, windowEntry)
-        }
-      }
-    }
+  onceReady (f) {
+    if (this.ready) return f()
+    this.once('ready', f)
+  }
 
-    var mtp = this._getMedianTimePast()
-    for (let dep of this.deployments) {
-      if (dep.status === 'defined' || dep.status === 'started') {
-        if (mtp >= dep.timeout) {
-          this._updateDeployment(dep.name, { status: 'failed' }, windowEntry)
-        } else if (dep.status === 'defined' && mtp >= dep.start) {
-          this._updateDeployment(dep.name, {
-            status: 'started',
-            startHeight: block.height
-          }, windowEntry)
-        }
-      }
-    }
-
-    if (this.window.length > this.params.confirmationWindow) {
-      let expiredEntry = this.window.shift()
-      if (isBip9Version(expiredEntry.version)) {
-        this.bip9Count -= 1
-        for (let dep of expiredEntry.deployments) {
-          dep.count--
-        }
-      }
-    }
-
-    if (isBip9Version(version)) {
-      this.bip9Count += 1
-      let bits = getBits(version)
-      for (let bit of bits) {
-        let dep = this._getStartedDeployment(bit)
-        if (!dep) {
-          dep = {
-            count: 0,
-            bit,
-            status: 'started',
-            name: `unknown-${bit}-${block.height}`,
-            unknown: true,
-            start: timestamp,
-            startHeight: block.height,
-            timeout: timestamp + YEAR // just a guess, we don't know the actual timeout
+  _init () {
+    var db = this.state.getDB()
+    db.createReadStream()
+      .on('data', (entry) => {
+        if (entry.key.startsWith('entry:')) {
+          this.window.push(JSON.parse(entry.value))
+        } else if (entry.key.startsWith('dep:')) {
+          let dep = JSON.parse(entry.value)
+          let existing = this.deploymentsIndex[dep.name]
+          if (existing) {
+            this.deployments.splice(this.deployments.indexOf(existing), 1)
           }
-          this.deployments.push(dep)
           this.deploymentsIndex[dep.name] = dep
-          // TODO: store deployment in db
-          this.emit('unknown', assign({}, dep))
-          this.emit('started', assign({}, dep))
-          this.emit('update', assign({}, dep))
+          this.deployments.push(dep)
+        } else if (entry.key === 'bip9Count') {
+          this.bip9Count = +entry.value
         }
-        var diff = { count: dep.count + 1 }
-        if (dep.count === this.params.activationThreshold) {
-          diff = assign(diff, {
-            status: 'lockedIn',
-            lockInHeight: block.height,
-            lockInTime: timestamp
-          })
+      })
+      .once('end', () => {
+        console.log(this.deployments)
+        this.ready = true
+        this.emit('ready')
+      })
+  }
+
+  _addBlock (block, tx, cb) {
+    this.onceReady(() => {
+      if (block.height % 1000 === 0) console.log(block.height)
+
+      var { version, timestamp } = block.header
+      var windowEntry = {
+        version,
+        timestamp,
+        prevState: {}
+      }
+      this.window.push(windowEntry)
+
+      var done = () => {
+        tx.put(`entry:${block.height}`, windowEntry, { valueEncoding: 'json' })
+        for (let id in windowEntry.prevState) {
+          tx.put(`dep:${id}`, this.deploymentsIndex[id], { valueEncoding: 'json' })
         }
-        this._updateDeployment(dep.name, diff, windowEntry)
+        cb()
+      }
+
+      if (this.window.length < TIME_WINDOW) return done()
+
+      // if we are at a retarget, activate eligible locked-in deployments
+      if (block.height % this.params.confirmationWindow === 0) {
+        for (let dep of this.deployments) {
+          if (dep.status !== 'lockedIn') continue
+          if (block.height - dep.lockInHeight >= this.params.confirmationWindow) {
+            this._updateDeployment(dep.name, {
+              status: 'activated',
+              activationHeight: block.height,
+              activationTime: timestamp
+            }, windowEntry)
+          }
+        }
+      }
+
+      // based on time, handle deployment starts and timeouts
+      var mtp = this._getMedianTimePast()
+      for (let dep of this.deployments) {
+        if (dep.status === 'defined' || dep.status === 'started') {
+          if (mtp >= dep.timeout) {
+            this._updateDeployment(dep.name, { status: 'failed' }, windowEntry)
+          } else if (dep.status === 'defined' && mtp >= dep.start) {
+            this._updateDeployment(dep.name, {
+              status: 'started',
+              startHeight: block.height
+            }, windowEntry)
+          }
+        }
+      }
+
+      // remove old entry from the current counts
+      if (this.window.length > this.params.confirmationWindow) {
+        let expiredEntry = this.window[this.window.length - this.params.confirmationWindow - 1]
+        if (isBip9Version(expiredEntry.version)) {
+          this.bip9Count -= 1
+          tx.put('bip9Count', this.bip9Count)
+          for (let id in expiredEntry.prevState) {
+            let { status, count } = this.deploymentsIndex[id]
+            if (status !== 'started' && status !== 'lockedIn') continue
+            count -= 1
+            this._updateDeployment(id, { count }, windowEntry)
+          }
+        }
+      }
+
+      // shift entries off of window
+      if (this.window.length > this.params.confirmationWindow + REORG_WINDOW) {
+        this.window.shift()
+        let height = block.height - (this.params.confirmationWindow + REORG_WINDOW)
+        tx.del(`entry:${height}`)
+      }
+
+      // increment deployments
+      if (isBip9Version(version)) {
+        this.bip9Count += 1
+        tx.put('bip9Count', this.bip9Count)
+        let bits = getBits(version)
+        for (let bit of bits) {
+          let dep = this._getStartedDeployment(bit)
+          if (!dep) {
+            // unknown deployment detected
+            let name = `unknown-${bit}-${block.height}`
+            this._updateDeployment(name, {
+              count: 0,
+              bit,
+              status: 'started',
+              name,
+              unknown: true,
+              start: timestamp,
+              startHeight: block.height,
+              timeout: timestamp + YEAR * 100 // we don't know the actual timeout
+            }, windowEntry)
+            dep = this.deploymentsIndex[name]
+          }
+
+          var diff = { count: dep.count + 1 }
+          if (dep.count === this.params.activationThreshold) {
+            assign(diff, {
+              status: 'lockedIn',
+              lockInHeight: block.height,
+              lockInTime: timestamp
+            })
+          }
+          this._updateDeployment(dep.name, diff, windowEntry)
+        }
+      }
+
+      done()
+    })
+  }
+
+  _removeBlock (block, tx, cb) {
+    if (this.window.length - this.params.activationThreshold <= 0) {
+      cb(new Error('Reached maximum reorg window, can\'t rewind any further'))
+      return
+    }
+    var windowEntry = this.window.pop()
+    for (let id in windowEntry.prevState) {
+      if (windowEntry.prevState[id] === null) {
+        delete this.deployments[id]
+      } else {
+        assign(this.deployments[id], windowEntry.prevState[id])
+        tx.put(`dep:${id}`, this.deployments[id], { valueEncoding: 'json' })
       }
     }
+    cb()
   }
 
   _updateDeployment (id, values, entry) {
-    var dep = this.deploymentsIndex[id]
+    var dep = this.deploymentsIndex[id] || null
     var oldDep = assign({}, dep)
-    if (!entry.deployments.includes(dep)) {
-      entry.deployments.push(dep)
+    if (!entry.prevState[id]) {
+      entry.prevState[id] = dep ? oldDep : null
     }
-    assign(dep, values)
+    if (!dep) {
+      dep = values
+      this.deployments.push(dep)
+      this.deploymentsIndex[dep.name] = dep
+    } else {
+      assign(dep, values)
+    }
+    var depCopy = assign({}, dep)
+    this.emit('update', depCopy)
     if (oldDep.status !== dep.status) {
-      var dep2 = assign({}, dep)
-      this.emit('update', dep2)
-      if (dep.unknown) this.emit('unknown', dep2)
-      this.emit(dep.status, dep2)
+      this.emit('status', depCopy)
+      if (dep.unknown) this.emit('unknown', depCopy)
+      this.emit(dep.status, depCopy)
     }
-  }
-
-  _removeBlock () {
-    this.emit('error', new Error('reorg handling not yet implemented'))
   }
 
   _getStartedDeployment (bit) {
