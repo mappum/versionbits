@@ -5,7 +5,7 @@ const old = require('old')
 const assign = require('object-assign')
 const BlockchainState = require('blockchain-state')
 
-const TIME_WINDOW = 11
+const TIME_WINDOW = 10
 const REORG_WINDOW = 100
 
 const YEAR = 31536000
@@ -127,6 +127,13 @@ class VersionBits extends PassThrough {
           if (mtp >= dep.timeout) {
             this._updateDeployment(dep.name, { status: 'failed' }, windowEntry)
           } else if (dep.status === 'defined' && mtp >= dep.start) {
+            let existing = this._getStartedDeployment(dep.bit)
+            if (existing) {
+              // if there is already a bip at this bit, set it to "failed"
+              this._updateDeployment(existing.name, {
+                status: 'failed'
+              }, windowEntry)
+            }
             this._updateDeployment(dep.name, {
               status: 'started',
               startHeight: block.height
@@ -143,7 +150,7 @@ class VersionBits extends PassThrough {
           tx.put('bip9Count', this.bip9Count)
           for (let id in expiredEntry.prevState) {
             let { status, count } = this.deploymentsIndex[id]
-            if (status !== 'started' && status !== 'lockedIn') continue
+            if (status === 'active') continue
             count -= 1
             this._updateDeployment(id, { count }, windowEntry)
           }
@@ -181,7 +188,8 @@ class VersionBits extends PassThrough {
           }
 
           var diff = { count: dep.count + 1 }
-          if (dep.count === this.params.activationThreshold) {
+          if (dep.status === 'started' &&
+          dep.count === this.params.activationThreshold) {
             assign(diff, {
               status: 'lockedIn',
               lockInHeight: block.height,
@@ -247,7 +255,7 @@ class VersionBits extends PassThrough {
     if (this.window.length < TIME_WINDOW) {
       throw new Error('Not enough blocks buffered to calculate median time past')
     }
-    var entries = this.window.slice(this.window.length - TIME_WINDOW)
+    var entries = this.window.slice(this.window.length - TIME_WINDOW - 1, this.window.length - 1)
     var timestamps = entries.map((entry) => entry.timestamp).sort()
     return timestamps[Math.floor(TIME_WINDOW / 2)]
   }
