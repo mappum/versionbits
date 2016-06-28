@@ -4,7 +4,11 @@
   "description": "Track Bitcoin versionbits deployments (BIP9)",
   "main": "index.js",
   "scripts": {
-    "test": "standard src/*.js test/*.js && nyc tape test/*.js | faucet && nyc report"
+    "test": "standard src/*.js test/*.js && nyc tape test/*.js | faucet && nyc report",
+    "build": "rm -rf lib && babel --presets es2015 src -d lib",
+    "source": "rm -rf lib && ln -s src lib",
+    "prepublish": "npm run build",
+    "publish": "npm run source"
   },
   "keywords": [
     "webcoin",
@@ -18,13 +22,17 @@
   "license": "MIT",
   "dependencies": {
     "blockchain-state": "0.0.1",
-    "faucet": "0.0.1",
     "level-browserify": "^1.1.0",
-    "nyc": "^6.4.4",
     "object-assign": "^4.1.0",
     "old": "^0.1.3",
-    "standard": "^7.1.2",
-    "tape": "^4.5.1",
     "to2": "^1.0.0"
+  },
+  "devDependencies": {
+    "babel-cli": "^6.10.1",
+    "babel-preset-es2015": "^6.9.0",
+    "faucet": "0.0.1",
+    "nyc": "^6.6.1",
+    "standard": "^7.1.2",
+    "tape": "^4.6.0"
   }
 }
