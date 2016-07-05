@@ -6,6 +6,8 @@ const assign = require('object-assign')
 const BlockchainState = require('blockchain-state')
 
 const TIME_WINDOW = 11
+const REORG_WINDOW = 10
+const WINDOW = TIME_WINDOW + REORG_WINDOW
 const YEAR = 31536000
 
 class VersionBits extends PassThrough {
@@ -59,10 +61,13 @@ class VersionBits extends PassThrough {
 
   _init () {
     var db = this.state.getDB()
+    var timestamps = []
     db.createReadStream()
       .on('data', (entry) => {
         if (entry.key.startsWith('timestamp:')) {
-          this.timestamps.push(JSON.parse(entry.value))
+          let height = +entry.key.slice('timestamp:'.length)
+          let timestamp = +entry.value
+          timestamps.push({ height, timestamp })
         } else if (entry.key.startsWith('dep:')) {
           let dep = JSON.parse(entry.value)
           let existing = this.deploymentsIndex[dep.name]
@@ -76,7 +81,9 @@ class VersionBits extends PassThrough {
         }
       })
       .once('end', () => {
-        console.log(this.deployments)
+        this.timestamps = timestamps
+          .sort((a, b) => a.height - b.height)
+          .map((obj) => obj.timestamp)
         this.ready = true
         this.emit('ready')
       })
@@ -84,15 +91,13 @@ class VersionBits extends PassThrough {
 
   _addBlock (block, tx, cb) {
     this.onceReady(() => {
-      if (block.height % 1000 === 0) console.log(block.height)
-
       var { version, timestamp } = block.header
       this.timestamps.push(timestamp)
-      if (this.timestamps.length > TIME_WINDOW) {
+      if (this.timestamps.length > WINDOW) {
         this.timestamps.shift()
       }
       tx.put(`timestamp:${block.height}`, timestamp)
-      tx.del(`timestamp:${block.height - TIME_WINDOW}`)
+      tx.del(`timestamp:${block.height - WINDOW}`)
 
       if (this.timestamps.length < TIME_WINDOW) return cb()
 
@@ -204,7 +209,8 @@ class VersionBits extends PassThrough {
   }
 
   _getMedianTimePast () {
-    var timestamps = this.timestamps.slice(0).sort()
+    var index = this.timestamps.length - TIME_WINDOW
+    var timestamps = this.timestamps.slice(index).sort()
     return timestamps[Math.floor(TIME_WINDOW / 2)]
   }
 }
