@@ -4,10 +4,10 @@ const { PassThrough } = require('stream')
 const old = require('old')
 const assign = require('object-assign')
 const BlockchainState = require('blockchain-state')
+const DState = require('dstate')
 
 const TIME_WINDOW = 11
-const REORG_WINDOW = 10
-const WINDOW = TIME_WINDOW + REORG_WINDOW
+const WINDOW = 100
 const YEAR = 31536000
 
 class VersionBits extends PassThrough {
@@ -22,36 +22,43 @@ class VersionBits extends PassThrough {
     assertValidParams(params)
     this.params = params
 
-    this.deployments = params.deployments.map((deployment) => {
-      return assign({
-        count: 0,
-        status: 'defined'
-      }, deployment)
-    })
+    this.state = {
+      deployments: params.deployments.map((deployment) => {
+        return assign({
+          count: 0,
+          status: 'defined'
+        }, deployment)
+      }),
+      timestamps: [],
+      bip9Count: 0
+    }
     this.deploymentsIndex = {}
     for (let dep of this.deployments) {
       this.deploymentsIndex[dep.name] = dep
     }
 
-    this.timestamps = []
-    this.bip9Count = 0
     this.ready = false
 
-    this.state = BlockchainState(
+    this.chainState = BlockchainState(
       this._addBlock.bind(this),
       this._removeBlock.bind(this),
       db)
-    this.pipe(this.state)
+    this.stateDb = DState(this.chainState.getDB())
+    this.pipe(this.chainState)
 
     this._init()
   }
+
+  get deployments () { return this.state.deployments }
+  get timestamps () { return this.state.timestamps }
+  get bip9Count () { return this.state.bip9Count }
 
   get (id) {
     return assign({}, this.deploymentsIndex[id] || {})
   }
 
   getHash (cb) {
-    return this.state.getHash(cb)
+    return this.chainState.getHash(cb)
   }
 
   onceReady (f) {
@@ -60,48 +67,44 @@ class VersionBits extends PassThrough {
   }
 
   _init () {
-    var db = this.state.getDB()
-    var timestamps = []
-    db.createReadStream()
-      .on('data', (entry) => {
-        if (entry.key.startsWith('timestamp:')) {
-          let height = +entry.key.slice('timestamp:'.length)
-          let timestamp = +entry.value
-          timestamps.push({ height, timestamp })
-        } else if (entry.key.startsWith('dep:')) {
-          let dep = JSON.parse(entry.value)
-          let existing = this.deploymentsIndex[dep.name]
-          if (existing) {
-            this.deployments.splice(this.deployments.indexOf(existing), 1)
-          }
-          this.deploymentsIndex[dep.name] = dep
-          this.deployments.push(dep)
-        } else if (entry.key === 'bip9Count') {
-          this.bip9Count = +entry.value
-        }
-      })
-      .once('end', () => {
-        this.timestamps = timestamps
-          .sort((a, b) => a.height - b.height)
-          .map((obj) => obj.timestamp)
-        this.ready = true
-        this.emit('ready')
-      })
+    var done = (err) => {
+      if (err) return this.emit('error', err)
+      this.ready = true
+      this.emit('ready')
+    }
+    this.stateDb.getState((err, state) => {
+      if (err) return done(err)
+      if (!state) {
+        return this.stateDb.commit(this.state, done)
+      }
+      this.state = state
+      this._indexDeployments()
+      done()
+    })
+  }
+
+  _indexDeployments () {
+    for (let dep of this.deployments) {
+      this.deploymentsIndex[dep.name] = dep
+    }
   }
 
   _addBlock (block, tx, cb) {
+    var done = () => {
+      this.stateDb.commit(this.state, { tx }, (err, index) => {
+        if (err) return cb(err)
+        if (index < WINDOW) return cb()
+        this.stateDb.prune(index - WINDOW, { tx }, cb)
+      })
+    }
     this.onceReady(() => {
       var { version, timestamp } = block.header
-      this.timestamps.push(timestamp)
-      if (this.timestamps.length > WINDOW) {
-        this.timestamps.shift()
-      }
-      tx.put(`timestamp:${block.height}`, timestamp)
-      tx.del(`timestamp:${block.height - WINDOW}`)
+      var timestamps = this.timestamps
+      timestamps.push(timestamp)
+      if (timestamps.length > TIME_WINDOW) timestamps.shift()
+      if (timestamps.length < TIME_WINDOW) return done()
 
-      if (this.timestamps.length < TIME_WINDOW) return cb()
-
-      // if we are at a retarget, check state transitions
+      // if we are at a retarget, check status transitions
       if (block.height % this.params.confirmationWindow === 0) {
         var mtp = this._getMedianTimePast()
 
@@ -111,43 +114,40 @@ class VersionBits extends PassThrough {
               status: 'activated',
               activationHeight: block.height,
               activationTime: mtp
-            }, tx)
+            })
           } else if (dep.status === 'started' &&
           dep.count >= this.params.activationThreshold) {
             this._updateDeployment(dep.name, {
               status: 'lockedIn',
               lockInHeight: block.height,
               lockInTime: mtp
-            }, tx)
+            })
           } else if (dep.status === 'started' && mtp >= dep.timeout) {
             this._updateDeployment(dep.name, {
               status: 'failed',
               lockInHeight: block.height,
               lockInTime: mtp
-            }, tx)
+            })
           } else if (dep.status === 'defined' && mtp >= dep.start) {
             let existing = this._getStartedDeployment(dep.bit)
             if (existing) {
               // if there is already a deployment for this bit, set it to "failed"
-              this._updateDeployment(existing.name, {
-                status: 'failed'
-              }, tx)
+              this._updateDeployment(existing.name, { status: 'failed' })
             }
             this._updateDeployment(dep.name, {
               status: 'started',
               startHeight: block.height,
               startTime: mtp
-            }, tx)
+            })
           }
-          this._updateDeployment(dep.name, { count: 0 }, tx)
-          this.bip9Count = 0
+          this._updateDeployment(dep.name, { count: 0 })
+          this.state.bip9Count = 0
         }
       }
 
       // increment deployments
       if (isBip9Version(version)) {
-        this.bip9Count += 1
-        tx.put('bip9Count', this.bip9Count)
+        this.state.bip9Count += 1
 
         let bits = getBits(version)
         for (let bit of bits) {
@@ -164,23 +164,29 @@ class VersionBits extends PassThrough {
               start: timestamp,
               startHeight: block.height,
               timeout: timestamp + YEAR * 100 // we don't know the actual timeout
-            }, tx)
+            })
             dep = this.deploymentsIndex[name]
           }
-
-          this._updateDeployment(dep.name, { count: dep.count + 1 }, tx)
+          this._updateDeployment(dep.name, { count: dep.count + 1 })
         }
       }
-
-      cb()
+      done()
     })
   }
 
   _removeBlock (block, tx, cb) {
-    cb(new Error('reorgs not handled yet'))
+    this.stateDb.getIndex((err, index) => {
+      if (err) return cb(err)
+      this.stateDb.rollback(index - 1, (err, state) => {
+        if (err) return cb(err)
+        this.state = state
+        this._indexDeployments()
+        cb()
+      })
+    })
   }
 
-  _updateDeployment (id, values, tx) {
+  _updateDeployment (id, values) {
     var dep = this.deploymentsIndex[id] || null
     var oldStatus = dep ? dep.status : null
     if (!dep) {
@@ -191,7 +197,6 @@ class VersionBits extends PassThrough {
       assign(dep, values)
     }
     var depCopy = assign({}, dep)
-    tx.put(`dep:${id}`, dep, { valueEncoding: 'json' })
     this.emit('update', depCopy)
     if (oldStatus !== dep.status) {
       this.emit('status', depCopy)
