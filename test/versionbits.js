@@ -1,5 +1,11 @@
 var test = require('tape')
+var level = require('levelup')
+var memdown = require('memdown')
 var VersionBits = require('../index.js')
+
+function createDb () {
+  return level(String(Math.random()), { db: memdown })
+}
 
 test('VersionBits constructor', function (t) {
   var params = {
@@ -8,12 +14,12 @@ test('VersionBits constructor', function (t) {
     deployments: []
   }
   t.test('normal constructor', function (t) {
-    var vb = new VersionBits(params)
+    var vb = new VersionBits(params, createDb())
     t.ok(vb instanceof VersionBits, 'got VersionBits instance')
     t.end()
   })
   t.test('constructor without "new"', function (t) {
-    var vb = VersionBits(params)
+    var vb = VersionBits(params, createDb())
     t.ok(vb instanceof VersionBits, 'got VersionBits instance')
     t.end()
   })
@@ -27,6 +33,16 @@ test('VersionBits constructor', function (t) {
       t.end()
     }
   })
+  t.test('constructor without db', function (t) {
+    try {
+      var vb = VersionBits(params)
+      t.notOk(vb, 'should have thrown')
+    } catch (err) {
+      t.ok(err, 'error thrown')
+      t.equal(err.message, 'Must specify LevelUp instance')
+      t.end()
+    }
+  })
   t.test('constructor with invalid params', function (t) {
     var invalidParams = [
       {},
@@ -37,7 +53,7 @@ test('VersionBits constructor', function (t) {
     ]
     for (var i = 0; i < invalidParams.length; i++) {
       try {
-        var vb = VersionBits(invalidParams[i])
+        var vb = VersionBits(invalidParams[i], createDb())
         t.notOk(vb, 'should have thrown')
       } catch (err) {
         t.ok(err, 'error thrown')
@@ -66,7 +82,7 @@ test('get deployments', function (t) {
       }
     ]
   }
-  var vb = new VersionBits(params)
+  var vb = new VersionBits(params, createDb())
   t.test('get deployment after initial constructor', function (t) {
     var dep = vb.get('foo')
     t.ok(dep, 'got deployment')
