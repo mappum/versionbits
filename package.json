@@ -1,6 +1,6 @@
 {
   "name": "versionbits",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Track Bitcoin versionbits deployments (BIP9)",
   "main": "index.js",
   "scripts": {
