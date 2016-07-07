@@ -5,6 +5,7 @@ const old = require('old')
 const assign = require('object-assign')
 const BlockchainState = require('blockchain-state')
 const DState = require('dstate')
+const clone = require('clone')
 
 const TIME_WINDOW = 11
 const WINDOW = 100
@@ -54,7 +55,11 @@ class VersionBits extends PassThrough {
   get bip9Count () { return this.state.bip9Count }
 
   get (id) {
-    return assign({}, this.deploymentsIndex[id] || {})
+    return clone(this.deploymentsIndex[id])
+  }
+
+  getDeployments () {
+    return clone(this.state.deployments)
   }
 
   getHash (cb) {
@@ -196,7 +201,7 @@ class VersionBits extends PassThrough {
     } else {
       assign(dep, values)
     }
-    var depCopy = assign({}, dep)
+    var depCopy = clone(dep)
     this.emit('update', depCopy)
     if (oldStatus !== dep.status) {
       this.emit('status', depCopy)

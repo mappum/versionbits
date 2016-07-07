@@ -22,6 +22,7 @@
   "license": "MIT",
   "dependencies": {
     "blockchain-state": "0.0.1",
+    "clone": "^1.0.2",
     "dstate": "0.0.1",
     "level-browserify": "^1.1.0",
     "object-assign": "^4.1.0",
