@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "test": "standard src/*.js test/*.js && nyc tape test/*.js | faucet && nyc report",
+    "test-browser": "npm run build && test/browser.sh && npm run source",
     "build": "rm -rf lib && babel --presets es2015 src -d lib",
     "source": "rm -rf lib && ln -s src lib",
     "prepublish": "npm run build",
@@ -35,6 +36,8 @@
     "faucet": "0.0.1",
     "nyc": "^6.6.1",
     "standard": "^7.1.2",
-    "tape": "^4.6.0"
+    "tape": "^4.6.0",
+    "zuul": "^3.10.1",
+    "zuul-ngrok": "^4.0.0"
   }
 }
