@@ -44,6 +44,10 @@ class VersionBits extends PassThrough {
       this._addBlock.bind(this),
       this._removeBlock.bind(this),
       db)
+    this.chainState.on('block', (block) => this.emit('block', block))
+    this.chainState.on('add', (block) => this.emit('add', block))
+    this.chainState.on('remove', (block) => this.emit('remove', block))
+
     this.stateDb = DState(this.chainState.getDB())
     this.pipe(this.chainState)
 
