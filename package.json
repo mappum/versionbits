@@ -22,7 +22,7 @@
   "author": "Matt Bell <mappum@gmail.com>",
   "license": "MIT",
   "dependencies": {
-    "blockchain-state": "^0.1.0",
+    "blockchain-state": "^0.2.0",
     "clone": "^1.0.2",
     "dstate": "^0.1.1",
     "level-browserify": "^1.1.0",
