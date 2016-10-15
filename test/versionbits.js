@@ -70,12 +70,12 @@ test('get deployments', function (t) {
     activationThreshold: 15,
     deployments: [
       {
-        name: 'foo',
+        id: 'foo',
         bit: 0,
         start: 5,
         timeout: 105
       }, {
-        name: 'bar',
+        id: 'bar',
         bit: 1,
         start: 50,
         timeout: 150
@@ -86,7 +86,7 @@ test('get deployments', function (t) {
   t.test('get deployment after initial constructor', function (t) {
     var dep = vb.get('foo')
     t.ok(dep, 'got deployment')
-    t.equal(dep.name, 'foo', 'correct name')
+    t.equal(dep.id, 'foo', 'correct id')
     t.equal(dep.bit, 0, 'correct bit')
     t.equal(dep.start, 5, 'correct start')
     t.equal(dep.timeout, 105, 'correct timeout')

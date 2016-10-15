@@ -35,7 +35,7 @@ class VersionBits extends PassThrough {
     }
     this.deploymentsIndex = {}
     for (let dep of this.deployments) {
-      this.deploymentsIndex[dep.name] = dep
+      this.deploymentsIndex[dep.id] = dep
     }
 
     this.ready = false
@@ -94,7 +94,7 @@ class VersionBits extends PassThrough {
 
   _indexDeployments () {
     for (let dep of this.deployments) {
-      this.deploymentsIndex[dep.name] = dep
+      this.deploymentsIndex[dep.id] = dep
     }
   }
 
@@ -119,20 +119,20 @@ class VersionBits extends PassThrough {
 
         for (let dep of this.deployments) {
           if (dep.status === 'lockedIn') {
-            this._updateDeployment(dep.name, {
+            this._updateDeployment(dep.id, {
               status: 'activated',
               activationHeight: block.height,
               activationTime: mtp
             })
           } else if (dep.status === 'started' &&
           dep.count >= this.params.activationThreshold) {
-            this._updateDeployment(dep.name, {
+            this._updateDeployment(dep.id, {
               status: 'lockedIn',
               lockInHeight: block.height,
               lockInTime: mtp
             })
           } else if (dep.status === 'started' && mtp >= dep.timeout) {
-            this._updateDeployment(dep.name, {
+            this._updateDeployment(dep.id, {
               status: 'failed',
               lockInHeight: block.height,
               lockInTime: mtp
@@ -141,15 +141,15 @@ class VersionBits extends PassThrough {
             let existing = this._getStartedDeployment(dep.bit)
             if (existing) {
               // if there is already a deployment for this bit, set it to "failed"
-              this._updateDeployment(existing.name, { status: 'failed' })
+              this._updateDeployment(existing.id, { status: 'failed' })
             }
-            this._updateDeployment(dep.name, {
+            this._updateDeployment(dep.id, {
               status: 'started',
               startHeight: block.height,
               startTime: mtp
             })
           }
-          this._updateDeployment(dep.name, { count: 0 })
+          this._updateDeployment(dep.id, { count: 0 })
           this.state.bip9Count = 0
         }
       }
@@ -163,20 +163,21 @@ class VersionBits extends PassThrough {
           let dep = this._getStartedDeployment(bit)
           if (!dep) {
             // unknown deployment detected
-            let name = `unknown-${bit}-${block.height}`
-            this._updateDeployment(name, {
+            let id = `unknown-${bit}-${block.height}`
+            this._updateDeployment(id, {
               count: 0,
               bit,
               status: 'started',
-              name,
+              name: 'Unknown',
+              id,
               unknown: true,
               start: timestamp,
               startHeight: block.height,
               timeout: timestamp + YEAR * 100 // we don't know the actual timeout
             })
-            dep = this.deploymentsIndex[name]
+            dep = this.deploymentsIndex[id]
           }
-          this._updateDeployment(dep.name, { count: dep.count + 1 })
+          this._updateDeployment(dep.id, { count: dep.count + 1 })
         }
       }
       done()
