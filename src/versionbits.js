@@ -8,7 +8,7 @@ const DState = require('dstate')
 const clone = require('clone')
 
 const TIME_WINDOW = 11
-const WINDOW = 100
+const REORG_WINDOW = 100
 const YEAR = 31536000
 
 class VersionBits extends PassThrough {
@@ -27,7 +27,8 @@ class VersionBits extends PassThrough {
       deployments: params.deployments.map((deployment) => {
         return assign({
           count: 0,
-          status: 'defined'
+          status: 'defined',
+          rollingCount: []
         }, deployment)
       }),
       timestamps: [],
@@ -102,56 +103,73 @@ class VersionBits extends PassThrough {
     var done = () => {
       this.stateDb.commit(this.state, { tx }, (err, index) => {
         if (err) return cb(err)
-        if (index < WINDOW) return cb()
-        this.stateDb.prune(index - WINDOW, { tx }, cb)
+        if (index < REORG_WINDOW) return cb()
+        this.stateDb.prune(index - REORG_WINDOW, { tx }, cb)
       })
     }
     this.onceReady(() => {
-      var { version, timestamp } = block.header
+      var prevMtp = this._getMedianTimePast()
       var timestamps = this.timestamps
+      var { version, timestamp } = block.header
       timestamps.push(timestamp)
       if (timestamps.length > TIME_WINDOW) timestamps.shift()
       if (timestamps.length < TIME_WINDOW) return done()
+      var mtp = this._getMedianTimePast()
 
       // if we are at a retarget, check status transitions
       if (block.height % this.params.confirmationWindow === 0) {
-        var mtp = this._getMedianTimePast()
-
         for (let dep of this.deployments) {
           if (dep.status === 'lockedIn') {
             this._updateDeployment(dep.id, {
               status: 'activated',
-              activationHeight: block.height,
-              activationTime: mtp
+              activationTime: prevMtp
             })
           } else if (dep.status === 'started' &&
           dep.count >= this.params.activationThreshold) {
             this._updateDeployment(dep.id, {
               status: 'lockedIn',
               lockInHeight: block.height,
-              lockInTime: mtp
+              lockInTime: prevMtp,
+              activationHeight: block.height + 2016,
+              rollingCount: null
             })
-          } else if (dep.status === 'started' && mtp >= dep.timeout) {
+          } else if (dep.status === 'started' && prevMtp >= dep.timeout) {
             this._updateDeployment(dep.id, {
               status: 'failed',
               lockInHeight: block.height,
-              lockInTime: mtp
-            })
-          } else if (dep.status === 'defined' && mtp >= dep.start) {
-            let existing = this._getStartedDeployment(dep.bit)
-            if (existing) {
-              // if there is already a deployment for this bit, set it to "failed"
-              this._updateDeployment(existing.id, { status: 'failed' })
-            }
-            this._updateDeployment(dep.id, {
-              status: 'started',
-              startHeight: block.height,
-              startTime: mtp
+              lockInTime: prevMtp
             })
           }
           this._updateDeployment(dep.id, { count: 0 })
           this.state.bip9Count = 0
         }
+      }
+
+      for (let dep of this.deployments) {
+        if (dep.status === 'defined' && prevMtp >= dep.start) {
+          let existing = this._getStartedDeployment(dep.bit)
+          if (existing) {
+            // if there is already a deployment for this bit, set it to "failed"
+            this._updateDeployment(existing.id, { status: 'failed' })
+          }
+          this._updateDeployment(dep.id, {
+            status: 'started',
+            startHeight: block.height,
+            startTime: prevMtp,
+            rollingCount: [ 0 ]
+          })
+        }
+        if (dep.status !== 'started') continue
+        let lastCount = 0
+        if (dep.rollingCount.length > 0) {
+          lastCount = dep.rollingCount[dep.rollingCount.length - 1]
+        }
+        if (dep.rollingCount.length > this.params.confirmationWindow + 1) {
+          let shifted = dep.rollingCount.shift()
+          if (shifted !== dep.rollingCount[0]) lastCount -= 1
+        }
+        // we increment the count later when we check the bits
+        dep.rollingCount.push(lastCount)
       }
 
       // increment deployments
@@ -171,11 +189,15 @@ class VersionBits extends PassThrough {
               name: 'Unknown',
               id,
               unknown: true,
-              start: timestamp,
+              start: mtp,
               startHeight: block.height,
-              timeout: timestamp + YEAR * 100 // we don't know the actual timeout
+              rollingCount: [ 0 ],
+              timeout: mtp + YEAR * 100 // we don't know the actual timeout
             })
             dep = this.deploymentsIndex[id]
+          }
+          if (dep.status === 'started') {
+            dep.rollingCount[dep.rollingCount.length - 1] += 1
           }
           this._updateDeployment(dep.id, { count: dep.count + 1 })
         }
